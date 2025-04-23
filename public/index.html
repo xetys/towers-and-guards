@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Guards & Towers Multiplayer</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; max-width: 900px; margin: auto; }
+    .hidden { display: none; }
+    #board { display: grid; grid-template-columns: repeat(7, 60px); gap: 2px; margin-top: 20px; }
+    .cell {
+      width: 60px; height: 60px;
+      border: 1px solid #999;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: bold; position: relative; font-size: 18px;
+      cursor: pointer;
+    }
+    .home { background: #eee; }
+    .highlight { background-color: #fffacc !important; }
+    .blue { color: blue; }
+    .red { color: red; }
+    .stack, .guard {
+      width: 40px; height: 40px;
+      display: flex; align-items: center; justify-content: center;
+      color: white;
+    }
+    .stack { border-radius: 50%; }
+    .guard { border-radius: 4px; background-color: currentColor; }
+    .controls { margin-bottom: 20px; }
+    .section { margin-top: 20px; }
+    #joinLink { margin-top: 10px; color: green; word-break: break-all; }
+    button { padding: 6px 12px; margin-right: 10px; }
+  </style>
+</head>
+<body>
+
+<h2>Guards and Towers Multiplayer</h2>
+
+<div class="controls" id="setup">
+  <input id="nameInput" placeholder="Your name" />
+  <div id="codeWrapper">
+    <input id="joinCode" placeholder="Game Code" />
+  </div>
+  <button id="createBtn" onclick="createGame()">Create Game</button>
+  <button id="joinBtn" onclick="joinGame()">Join Game</button>
+  <p id="status"></p>
+  <div id="joinLink"></div>
+</div>
+
+<div id="gameContainer" class="hidden">
+  <p><strong>Game ID:</strong> <span id="gameIdDisplay"></span></p>
+  <p><strong>You are:</strong> <span id="playerRole"></span> (<span id="playerName"></span>)</p>
+  <p><strong>Opponent:</strong> <span id="opponentName"></span></p>
+  <p id="turnInfo"></p>
+  <div id="board"></div>
+
+  <div class="section">
+    <h3>Move Log</h3>
+    <div id="moveLog" style="background:#f1f1f1; padding:10px; border:1px solid #ccc;"></div>
+  </div>
+
+  <div class="section">
+    <h3>Board Notation</h3>
+    <div id="boardNotation" style="background:#f9f9f9; padding:10px; border:1px solid #ccc;"></div>
+    <button onclick="copyNotation()">Copy Notation</button>
+  </div>
+</div>
+
+<script>
+  let socket;
+  let gameId = '';
+  let playerName = '';
+  let playerColor = '';
+  let board = [];
+  let currentTurn = '';
+  let selectedIndex = null;
+  let moveLog = [];
+  let highlightedMoves = [];
+
+  const SIZE = 7;
+  function coordToIndex(x, y) { return y * SIZE + x; }
+  function indexToCoord(i) { return [i % SIZE, Math.floor(i / SIZE)]; }
+  function indexToLabel(i) { const [x, y] = indexToCoord(i); return String.fromCharCode(65 + x) + (7 - y); }
+
+  function createGame() {
+    playerName = document.getElementById('nameInput').value.trim() || 'Player';
+    socket.send(JSON.stringify({ type: 'create', name: playerName }));
+  }
+
+  function joinGame() {
+    playerName = document.getElementById('nameInput').value.trim() || 'Player';
+    const code = document.getElementById('joinCode').value.trim().toUpperCase();
+    gameId = code;
+    socket.send(JSON.stringify({ type: 'join', name: playerName, gameId: code }));
+  }
+
+  function drawBoard() {
+    const boardEl = document.getElementById('board');
+    boardEl.innerHTML = '';
+    for (let i = 0; i < board.length; i++) {
+      const cell = board[i];
+      const div = document.createElement('div');
+      div.className = 'cell';
+      const [x, y] = indexToCoord(i);
+      if ((x === 3 && y === 0) || (x === 3 && y === 6)) div.classList.add('home');
+      if (highlightedMoves.includes(i)) div.classList.add('highlight');
+      if (selectedIndex === i) div.classList.add('highlight');
+
+      if (cell) {
+        const piece = document.createElement('div');
+        piece.className = `${cell.type} ${cell.player}`;
+        piece.style.backgroundColor = cell.player;
+        piece.textContent = cell.type === 'stack' ? cell.count : 'G';
+        div.appendChild(piece);
+      }
+
+      div.onclick = () => handleClick(i);
+      boardEl.appendChild(div);
+    }
+
+    document.getElementById('turnInfo').textContent = `Current turn: ${currentTurn}`;
+    updateBoardNotation();
+  }
+
+  function handleClick(i) {
+    if (currentTurn !== playerColor) return;
+    const piece = board[i];
+
+    if (selectedIndex === null) {
+      if (piece && piece.player === playerColor) {
+        selectedIndex = i;
+        highlightedMoves = calculateValidMoves(i);
+      }
+    } else {
+      if (i === selectedIndex) {
+        selectedIndex = null;
+        highlightedMoves = [];
+      } else {
+        const moveAmount = getMoveAmount(selectedIndex, i);
+        if (moveAmount > 0) {
+          socket.send(JSON.stringify({
+            type: 'move',
+            gameId,
+            player: playerColor,
+            moveIndex: selectedIndex,
+            toIndex: i
+          }));
+        }
+        selectedIndex = null;
+        highlightedMoves = [];
+      }
+    }
+
+    drawBoard();
+  }
+
+  function getMoveAmount(from, to) {
+    const piece = board[from];
+    if (!piece || piece.type !== 'stack') return 1;
+    const dx = Math.abs(to % 7 - from % 7);
+    const dy = Math.abs(Math.floor(to / 7) - Math.floor(from / 7));
+    return Math.max(dx, dy);
+  }
+
+  function calculateValidMoves(fromIndex) {
+    const moves = [];
+    const piece = board[fromIndex];
+    if (!piece) return moves;
+
+    const fromX = fromIndex % 7;
+    const fromY = Math.floor(fromIndex / 7);
+
+    if (piece.type === 'guard') {
+      const dirs = [[0,1],[0,-1],[1,0],[-1,0]];
+      for (const [dx, dy] of dirs) {
+        const x = fromX + dx;
+        const y = fromY + dy;
+        if (x >= 0 && x < 7 && y >= 0 && y < 7) {
+          const target = board[y * 7 + x];
+          if (!target || target.player !== playerColor) moves.push(y * 7 + x);
+        }
+      }
+    }
+
+    if (piece.type === 'stack') {
+      const directions = [[0,1],[0,-1],[1,0],[-1,0]];
+      for (const [dx, dy] of directions) {
+        for (let step = 1; step <= piece.count; step++) {
+          const x = fromX + dx * step;
+          const y = fromY + dy * step;
+          if (x < 0 || x >= 7 || y < 0 || y >= 7) break;
+
+          let blocked = false;
+          for (let i = 1; i < step; i++) {
+            const checkX = fromX + dx * i;
+            const checkY = fromY + dy * i;
+            if (board[checkY * 7 + checkX]) { blocked = true; break; }
+          }
+
+          if (blocked) break;
+
+          const target = board[y * 7 + x];
+          if (!target || target.player === playerColor || (target.type === 'stack' && piece.count >= target.count) || target.type === 'guard') {
+            moves.push(y * 7 + x);
+          }
+        }
+      }
+    }
+
+    return moves;
+  }
+
+  function updateBoardNotation() {
+    let notation = '';
+    for (let y = 0; y < SIZE; y++) {
+      let row = '', empty = 0;
+      for (let x = 0; x < SIZE; x++) {
+        const cell = board[y * SIZE + x];
+        if (!cell) empty++;
+        else {
+          if (empty > 0) { row += empty; empty = 0; }
+          row += cell.type === 'guard' ? (cell.player === 'red' ? 'RG' : 'BG') : (cell.player[0] + cell.count);
+        }
+      }
+      if (empty > 0) row += empty;
+      notation += row + (y < SIZE - 1 ? '/' : '');
+    }
+    notation += ' ' + (currentTurn === 'red' ? 'r' : 'b');
+    document.getElementById('boardNotation').textContent = notation;
+  }
+
+  function copyNotation() {
+    const text = document.getElementById('boardNotation').textContent;
+    navigator.clipboard.writeText(text).then(() => alert('Notation copied!'));
+  }
+
+  function startGameUI(players, id, role) {
+    const opponent = players.find(p => p.color !== role);
+    document.getElementById('setup').classList.add('hidden');
+    document.getElementById('gameContainer').classList.remove('hidden');
+    document.getElementById('gameIdDisplay').textContent = id;
+    document.getElementById('playerName').textContent = playerName;
+    document.getElementById('playerRole').textContent = role;
+    document.getElementById('opponentName').textContent = opponent?.name || 'Waiting...';
+  }
+
+  window.onload = () => {
+    socket = new WebSocket(`ws://${location.host}`);
+    const urlParams = new URLSearchParams(window.location.search);
+    const prefilledGameId = urlParams.get('gameId');
+
+    if (prefilledGameId) {
+      document.getElementById('createBtn').style.display = 'none';
+      document.getElementById('codeWrapper').style.display = 'none';
+      document.getElementById('joinCode').value = prefilledGameId;
+    }
+
+    socket.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+
+      if (msg.type === 'created') {
+        gameId = msg.gameId;
+        playerColor = msg.color;
+        document.getElementById('status').textContent = `Game created. Share this link:`;
+        const link = `${window.location.origin}?gameId=${gameId}`;
+        window.history.pushState({}, '', link);
+        document.getElementById('joinLink').innerHTML = `<a href="${link}" target="_blank">${link}</a>`;
+      }
+
+      if (msg.type === 'start') {
+        board = msg.board;
+        currentTurn = msg.turn;
+        const me = msg.players.find(p => p.name === playerName);
+        playerColor = me.color;
+        startGameUI(msg.players, gameId, playerColor);
+        drawBoard();
+      }
+
+      if (msg.type === 'update') {
+        board = msg.board;
+        currentTurn = msg.turn;
+        if (msg.lastMove) {
+          moveLog.push(msg.lastMove);
+          document.getElementById('moveLog').textContent = moveLog.join(', ');
+        }
+        drawBoard();
+      }
+
+      if (msg.type === 'error') {
+        alert(msg.message);
+      }
+    };
+  };
+</script>
+</body>
+</html>
