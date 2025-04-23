@@ -37,7 +37,7 @@
 
 <div class="controls" id="setup">
   <input id="nameInput" placeholder="Your name" />
-  <div id="codeWrapper">
+  <div id="codeWrapper" style="display: none">
     <input id="joinCode" placeholder="Game Code" />
   </div>
   <button id="createBtn" onclick="createGame()">Create Game</button>
@@ -244,7 +244,12 @@
   }
 
   window.onload = () => {
-    socket = new WebSocket(`ws://${location.host}`);
+    let websocketProtocol = 'ws';
+    // check if the protocol is https
+    if (location.protocol === 'https:') {
+      websocketProtocol = 'wss';
+    }
+    socket = new WebSocket(`${websocketProtocol}://${location.host}`);
     const urlParams = new URLSearchParams(window.location.search);
     const prefilledGameId = urlParams.get('gameId');
 
