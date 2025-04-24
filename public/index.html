@@ -27,7 +27,7 @@
     .guard { border-radius: 4px; background-color: currentColor; }
     .controls { margin-bottom: 20px; }
     .section { margin-top: 20px; }
-    #joinLink { margin-top: 10px; color: green; word-break: break-all; }
+    #joinLink { margin-top: 10px; color: green; word-break: break-word; }
     button { padding: 6px 12px; margin-right: 10px; }
   </style>
 </head>
@@ -51,6 +51,10 @@
   <p><strong>You are:</strong> <span id="playerRole"></span> (<span id="playerName"></span>)</p>
   <p><strong>Opponent:</strong> <span id="opponentName"></span></p>
   <p id="turnInfo"></p>
+  <p id="winMessage" style="color: green; font-weight: bold;"></p>
+  <button id="requestUndoBtn" onclick="requestUndo()">Turn Back</button>
+  <button id="requestNewGameBtn" onclick="requestNewGame()">New Game</button>
+
   <div id="board"></div>
 
   <div class="section">
@@ -75,6 +79,7 @@
   let selectedIndex = null;
   let moveLog = [];
   let highlightedMoves = [];
+  let gameOver = false;
 
   const SIZE = 7;
   function coordToIndex(x, y) { return y * SIZE + x; }
@@ -91,6 +96,20 @@
     const code = document.getElementById('joinCode').value.trim().toUpperCase();
     gameId = code;
     socket.send(JSON.stringify({ type: 'join', name: playerName, gameId: code }));
+  }
+
+  function requestUndo() {
+    if (socket && !gameOver) {
+      document.getElementById('requestUndoBtn').disabled = true;
+      socket.send(JSON.stringify({ type: 'undoRequest', gameId }));
+    }
+  }
+
+  function requestNewGame() {
+    if (socket) {
+      document.getElementById('requestNewGameBtn').disabled = true;
+      socket.send(JSON.stringify({ type: 'newGameRequest', gameId }));
+    }
   }
 
   function drawBoard() {
@@ -122,9 +141,9 @@
   }
 
   function handleClick(i) {
-    if (currentTurn !== playerColor) return;
-    const piece = board[i];
+    if (currentTurn !== playerColor || gameOver) return;
 
+    const piece = board[i];
     if (selectedIndex === null) {
       if (piece && piece.player === playerColor) {
         selectedIndex = i;
@@ -244,19 +263,23 @@
   }
 
   window.onload = () => {
-    let websocketProtocol = 'ws';
-    // check if the protocol is https
-    if (location.protocol === 'https:') {
-      websocketProtocol = 'wss';
-    }
+    let websocketProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
     socket = new WebSocket(`${websocketProtocol}://${location.host}`);
     const urlParams = new URLSearchParams(window.location.search);
     const prefilledGameId = urlParams.get('gameId');
 
+    const createBtn = document.getElementById('createBtn');
+    const joinBtn = document.getElementById('joinBtn');
+    const codeWrapper = document.getElementById('codeWrapper');
+
     if (prefilledGameId) {
-      document.getElementById('createBtn').style.display = 'none';
-      document.getElementById('codeWrapper').style.display = 'none';
+      createBtn.style.display = 'none';
+      codeWrapper.style.display = 'none';
+      joinBtn.style.display = '';
       document.getElementById('joinCode').value = prefilledGameId;
+    } else {
+      joinBtn.style.display = 'none';
+      codeWrapper.style.display = 'none';
     }
 
     socket.onmessage = (e) => {
@@ -274,20 +297,50 @@
       if (msg.type === 'start') {
         board = msg.board;
         currentTurn = msg.turn;
+        gameOver = false;
+        document.getElementById('winMessage').textContent = '';
+        document.getElementById('moveLog').textContent = '';
         const me = msg.players.find(p => p.name === playerName);
         playerColor = me.color;
         startGameUI(msg.players, gameId, playerColor);
         drawBoard();
+        document.getElementById('requestUndoBtn').disabled = false;
+        document.getElementById('requestNewGameBtn').disabled = false;
       }
 
       if (msg.type === 'update') {
         board = msg.board;
         currentTurn = msg.turn;
+        gameOver = false;
         if (msg.lastMove) {
           moveLog.push(msg.lastMove);
           document.getElementById('moveLog').textContent = moveLog.join(', ');
         }
         drawBoard();
+        document.getElementById('requestUndoBtn').disabled = false;
+        document.getElementById('requestNewGameBtn').disabled = false;
+      }
+
+      if (msg.type === 'winner') {
+        board = msg.board;
+        drawBoard();
+        currentTurn = '';
+        gameOver = true;
+        document.getElementById('winMessage').textContent = `🎉 ${msg.winner.toUpperCase()} wins!`;
+      }
+
+      if (msg.type === 'undoRequest') {
+        const confirmUndo = confirm("Your opponent requested to undo the last move. Accept?");
+        if (confirmUndo) {
+          socket.send(JSON.stringify({ type: 'undoConfirm', gameId }));
+        }
+      }
+
+      if (msg.type === 'newGameRequest') {
+        const confirmNewGame = confirm("Your opponent requested a new game. Accept?");
+        if (confirmNewGame) {
+          socket.send(JSON.stringify({ type: 'newGameConfirm', gameId }));
+        }
       }
 
       if (msg.type === 'error') {
